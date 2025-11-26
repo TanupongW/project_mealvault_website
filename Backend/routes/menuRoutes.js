@@ -306,15 +306,97 @@ router.get('/menus/recommended-liked', authMiddleware, async (req, res) => {
     if (likes && likes.length > 0) {
       const likedIds = likes.map(like => like.menu_id);
 
-      const { data, error } = await supabase
+      // ดึงรายละเอียดเมนูที่เคยกดไลค์ (ใช้เป็น anchor แนะนำ)
+      const { data: likedMenus, error: likedMenusErr } = await supabase
         .from('Menu')
-        .select('menu_id, menu_name, menu_image, menu_description, menu_like_count')
-        .in('menu_id', likedIds)
-        .order('menu_like_count', { ascending: false })
-        .limit(12);
+        .select('menu_id, menu_name, menu_image, menu_description, menu_like_count, category_id')
+        .in('menu_id', likedIds);
 
-      if (error) throw error;
-      menus = data || [];
+      if (likedMenusErr) throw likedMenusErr;
+
+      // เก็บ category ของเมนูที่เคยกดไลค์ไว้ เพื่อหาเมนู "ใกล้เคียงกัน" ในหมวดหมู่เดียวกัน
+      const likedCategories = Array.from(
+        new Set((likedMenus || []).map(m => m.category_id).filter(Boolean))
+      );
+
+      // เมนูที่เคย interact โดยตรง เรียงตามยอดไลค์
+      const sortedLiked = (likedMenus || [])
+        .sort((a, b) => (b.menu_like_count || 0) - (a.menu_like_count || 0));
+
+      // เมนูในหมวดหมู่เดียวกันที่ผู้ใช้ยังไม่เคยไลค์ (เมนูใกล้เคียง)
+      let similarMenus = [];
+      if (likedCategories.length > 0) {
+        // ดึงเมนูทั้งหมดในหมวดหมู่ที่ชอบก่อน
+        const { data: sameCategoryMenus, error: sameCatErr } = await supabase
+          .from('Menu')
+          .select('menu_id, menu_name, menu_image, menu_description, menu_like_count, category_id')
+          .in('category_id', likedCategories);
+
+        if (sameCatErr) throw sameCatErr;
+
+        // กรองเอาเฉพาะเมนูที่ยังไม่เคยไลค์ (ตัดเมนูที่เคยไลค์ออก)
+        similarMenus = (sameCategoryMenus || [])
+          .filter(menu => !likedIds.includes(menu.menu_id))
+          .sort((a, b) => (b.menu_like_count || 0) - (a.menu_like_count || 0))
+          .slice(0, 10); // เอาแค่ 10 เมนูใกล้เคียง
+      }
+
+      // รวม: เมนูที่เคยไลค์ (บางส่วน) + เมนูใกล้เคียง ให้ครบ 12 เมนู
+      // เน้นให้มีเมนูใหม่ๆ มากกว่าเมนูที่เคยไลค์
+      const likedCount = Math.min(3, sortedLiked.length); // เอาเมนูที่เคยไลค์แค่ 3 ตัวแรก
+      const similarCount = 12 - likedCount; // ที่เหลือให้เป็นเมนูใกล้เคียง
+      
+      const selectedLiked = sortedLiked.slice(0, likedCount);
+      const selectedSimilar = similarMenus.slice(0, similarCount);
+      
+      // รวมกันและตัดซ้ำ
+      const combinedMap = new Map();
+      [...selectedLiked, ...selectedSimilar].forEach(menu => {
+        if (menu && !combinedMap.has(menu.menu_id)) {
+          combinedMap.set(menu.menu_id, menu);
+        }
+      });
+
+      menus = Array.from(combinedMap.values());
+      
+      // ถ้ายังไม่ครบ 12 ให้เติมเมนูอื่นๆ จากฐานข้อมูล (ไม่ใช่แค่เมนูที่เคยไลค์)
+      if (menus.length < 12) {
+        const allLikedIds = new Set([...likedIds, ...menus.map(m => m.menu_id)]);
+        
+        // ดึงเมนูทั้งหมดจากฐานข้อมูล (ไม่ใช่แค่ยอดนิยม)
+        const { data: otherMenus } = await supabase
+          .from('Menu')
+          .select('menu_id, menu_name, menu_image, menu_description, menu_like_count, category_id')
+          .order('menu_datetime', { ascending: false }) // เรียงตามวันที่สร้างใหม่
+          .limit(50); // ดึงเยอะๆ เพื่อให้มีตัวเลือก
+        
+        // กรองเมนูที่ยังไม่เคยไลค์ และสุ่มเลือก
+        const availableMenus = (otherMenus || [])
+          .filter(m => !allLikedIds.has(m.menu_id));
+        
+        // สุ่มเลือกเมนูให้หลากหลาย (ไม่ใช่แค่ยอดนิยม)
+        const shuffled = [...availableMenus].sort(() => Math.random() - 0.5);
+        const needed = 12 - menus.length;
+        const extra = shuffled.slice(0, needed);
+        
+        menus = [...menus, ...extra];
+      }
+      
+      // ถ้ายังไม่ครบอีก ให้เติมเมนูยอดนิยม
+      if (menus.length < 12) {
+        const allUsedIds = new Set(menus.map(m => m.menu_id));
+        const { data: popularMenus } = await supabase
+          .from('Menu')
+          .select('menu_id, menu_name, menu_image, menu_description, menu_like_count, category_id')
+          .order('menu_like_count', { ascending: false })
+          .limit(20);
+        
+        const extra = (popularMenus || [])
+          .filter(m => !allUsedIds.has(m.menu_id))
+          .slice(0, 12 - menus.length);
+        
+        menus = [...menus, ...extra];
+      }
     } else {
       // ถ้ายังไม่เคยกดไลค์เลย ให้แนะนำจากเมนูที่มียอดไลค์สูงสุดในระบบ
       const { data, error } = await supabase

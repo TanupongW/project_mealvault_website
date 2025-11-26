@@ -44,6 +44,31 @@ function Recommended() {
   const { token } = useContext(AuthContext);
 
   const ITEMS_PER_PAGE = 3;
+  const MAX_ITEMS = 12;
+
+  // ผสมเมนูยอดไลค์สูงกับเมนูที่ไลค์น้อย/ยังไม่มีคนไลค์ให้มีโอกาสแสดงมากขึ้น
+  const mixPopularAndLessLiked = (menus) => {
+    if (!Array.isArray(menus) || menus.length === 0) return [];
+
+    const withLikeCount = menus.map((m) => ({
+      ...m,
+      _like: typeof m.menu_like_count === 'number' ? m.menu_like_count : 0,
+    }));
+
+    // เรียงจากไลค์มากไปน้อยก่อน เพื่อดึงกลุ่มยอดนิยม
+    const sorted = withLikeCount.sort((a, b) => b._like - a._like);
+
+    const popularCount = Math.min(6, sorted.length);
+    const popular = sorted.slice(0, popularCount);
+    const others = sorted.slice(popularCount);
+
+    // สุ่มเมนูที่เหลือ (รวมถึงเมนูไลค์น้อย/ศูนย์ไลค์)
+    const shuffledOthers = [...others].sort(() => Math.random() - 0.5);
+    const remainingSlots = Math.max(0, MAX_ITEMS - popular.length);
+    const pickedOthers = shuffledOthers.slice(0, remainingSlots);
+
+    return [...popular, ...pickedOthers].map(({ _like, ...rest }) => rest);
+  };
 
   useEffect(() => {
     const fetchRecommendedMenus = async () => {
@@ -51,12 +76,67 @@ function Recommended() {
       setError('');
       try {
         if (token) {
-          // ถ้าผู้ใช้ล็อกอิน: ใช้เมนูที่ผู้ใช้กดไลค์มากที่สุดเป็นฐาน
+          let aiList = []; // ประกาศไว้ข้างนอก try block
+          
+          // 1) พยายามใช้เมนูจาก AI (เลือกจากเมนูในฐานข้อมูลเท่านั้น)
+          try {
+            console.log('🔍 [Recommended] Calling /api/ai/recommendations...');
+            const aiResp = await fetch(`${API_URL}/ai/recommendations`, {
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            });
+
+            console.log('🔍 [Recommended] AI Response status:', aiResp.status, aiResp.statusText);
+
+            if (aiResp.ok) {
+              const aiData = await aiResp.json();
+              console.log('🔍 [Recommended] AI Response data:', aiData);
+              console.log('🔍 [Recommended] Recommendations array:', aiData.recommendations);
+              
+              if (Array.isArray(aiData.recommendations)) {
+                // Debug: ดูแต่ละ item
+                aiData.recommendations.forEach((item, index) => {
+                  console.log(`🔍 [Recommended] Item ${index}:`, item, 'has menu_id?', !!item?.menu_id);
+                });
+                
+                aiList = aiData.recommendations.filter((item) => {
+                  const hasMenuId = item && item.menu_id;
+                  if (!hasMenuId) {
+                    console.warn('⚠️ [Recommended] Item without menu_id:', item);
+                  }
+                  return hasMenuId;
+                });
+              } else {
+                aiList = [];
+              }
+
+              console.log('🔍 [Recommended] AI List length after filter:', aiList.length);
+
+              // ถ้า AI/ML ให้ผลมา 5 ตัวขึ้นไป ใช้เลย
+              if (aiList.length >= 5) {
+                console.log('✅ [Recommended] Using AI recommendations:', aiList.length, 'items');
+                setRecommendedMenus(aiList);
+                return;
+              }
+              // ถ้าน้อยกว่า 5 ให้เก็บไว้แล้วไปเติมจาก fallback ด้านล่าง
+            } else {
+              console.warn('⚠️ [Recommended] AI Response not OK:', aiResp.status, await aiResp.text());
+            }
+          } catch (aiError) {
+            console.error('❌ [Recommended] AI recommendations failed:', aiError);
+            aiList = []; // Reset ถ้า error
+          }
+
+          // 2) ถ้า AI ใช้ไม่ได้ หรือมีผลน้อย ให้ใช้เมนูที่ผู้ใช้กดไลค์ + เมนูใหม่ๆ จากฐานข้อมูล
+          console.log('🔍 [Recommended] Calling /api/menus/recommended-liked...');
           const response = await fetch(`${API_URL}/menus/recommended-liked`, {
             headers: {
               Authorization: `Bearer ${token}`,
             },
           });
+          
+          console.log('🔍 [Recommended] Recommended-liked status:', response.status);
 
           if (!response.ok) {
             // ถ้า token หมดอายุหรือไม่ได้รับอนุญาต ให้ fallback ไปใช้ /menus แบบ public
@@ -67,7 +147,17 @@ function Recommended() {
           }
 
           const data = await response.json();
-          const list = Array.isArray(data) ? data : [];
+          const rawList = Array.isArray(data) ? data : [];
+          
+          // ถ้า AI ให้ผลมาน้อยกว่า 5 ให้รวมกับ fallback
+          let finalList = rawList;
+          if (aiList && aiList.length > 0 && aiList.length < 5) {
+            const aiIds = new Set(aiList.map(m => m.menu_id));
+            const additional = rawList.filter(m => !aiIds.has(m.menu_id));
+            finalList = [...aiList, ...additional].slice(0, 12);
+          }
+          
+          const list = mixPopularAndLessLiked(finalList);
 
           // ถ้าจาก liked ว่าง ให้ fallback ไปใช้ /menus
           if (!list.length) {
@@ -76,16 +166,13 @@ function Recommended() {
 
           setRecommendedMenus(list);
         } else {
-          // ถ้ายังไม่ล็อกอิน: ใช้เมนูจากฐานข้อมูล เรียงจากยอดไลค์มากไปน้อย
+          // ถ้ายังไม่ล็อกอิน: ใช้เมนูจากฐานข้อมูล แล้วผสมเมนูไลค์เยอะกับไลค์น้อย
           const fallbackResp = await fetch(`${API_URL}/menus`);
           const fallbackData = await fallbackResp.json();
           const allMenus = Array.isArray(fallbackData) ? fallbackData : [];
 
-          const sorted = [...allMenus]
-            .sort((a, b) => (b.menu_like_count || 0) - (a.menu_like_count || 0))
-            .slice(0, 12);
-
-          setRecommendedMenus(sorted);
+          const mixed = mixPopularAndLessLiked(allMenus);
+          setRecommendedMenus(mixed);
         }
       } catch (error) {
         console.error('Failed to fetch recommended menus:', error);
@@ -94,12 +181,10 @@ function Recommended() {
           const resp = await fetch(`${API_URL}/menus`);
           const data = await resp.json();
           const allMenus = Array.isArray(data) ? data : [];
-          const sorted = [...allMenus]
-            .sort((a, b) => (b.menu_like_count || 0) - (a.menu_like_count || 0))
-            .slice(0, 12);
+          const mixed = mixPopularAndLessLiked(allMenus);
 
-          setRecommendedMenus(sorted);
-          if (!sorted.length) {
+          setRecommendedMenus(mixed);
+          if (!mixed.length) {
             setError('ยังไม่มีเมนูแนะนำจากฐานข้อมูล');
           }
         } catch (fallbackError) {

@@ -4,7 +4,6 @@ import Hero from '../components/Hero';
 import MenuSuggestion from '../components/MenuSuggestion';
 import Recommended from '../components/Recommended';
 import UserPosts from '../components/UserPosts';
-import AIRecommendations from '../components/AIRecommendations';
 
 function HomePage() {
   return (
@@ -18,12 +17,7 @@ function HomePage() {
             <Hero />
           </div>
           
-          {/* AI Recommendations - personalized based on behavior */}
-          <div className="mb-16">
-            <AIRecommendations />
-          </div>
-          
-          {/* Recommended on top, AI Suggestion below */}
+          {/* Recommended menus based on your behavior and likes */}
           <div className="mb-16">
             <Recommended />
           </div>
