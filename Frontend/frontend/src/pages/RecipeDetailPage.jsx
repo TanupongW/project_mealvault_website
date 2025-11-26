@@ -138,11 +138,28 @@ function RecipeDetailPage() {
           setLiked(userRecipe.isLiked || false);
         } else {
           // ดึงเมนูจากระบบ (Thai Food API)
+          // ใช้ recipeId โดยตรงเป็น menu_id เพื่อไม่ต้อง search อีก
           const response = await fetch(`${API_URL}/thai-food/lookup.php?i=${recipeId}`);
           const data = await response.json();
           console.log('Thai Food API Response:', data); // Debug log
           if (data.meals && data.meals.length > 0) {
             setRecipe(data.meals[0]);
+            // ตั้งค่า menu_id โดยตรงจาก recipeId (ไม่ต้อง search)
+            setMenuId(recipeId);
+            
+            // Track menu view (fire-and-forget ไม่ await เพื่อไม่ให้ช้า)
+            if (token && user?.user_id) {
+              fetch(`${API_URL}/behavior/menu/view`, {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${token}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ menu_id: recipeId, user_id: user.user_id })
+              }).catch(error => {
+                console.error('Failed to track menu view:', error);
+              });
+            }
           } else {
             console.error('No meals found in response');
             setRecipe(null);
@@ -156,18 +173,15 @@ function RecipeDetailPage() {
       }
     };
     fetchRecipeDetails();
-  }, [recipeId, token]);
+  }, [recipeId, token, user]);
 
-  // โหลด plan และ menu_id เมื่อ recipe โหลดเสร็จและมี token
+  // โหลด plan เมื่อ recipe โหลดเสร็จและมี token
+  // menu_id ถูกตั้งค่าแล้วใน useEffect แรก (ไม่ต้อง search อีก)
   useEffect(() => {
-    if (recipe && token) {
-      const loadPlanAndMenuId = async () => {
+    if (recipe && token && !recipe.isUserRecipe) {
+      const loadPlan = async () => {
         setLoadingPlan(true);
         try {
-          // หา menu_id
-          const info = await findMenuIdByName(recipe.strMeal);
-          if (info) setMenuId(info.id);
-          
           // ดึง plan
           const planData = await fetchPlanFromAPI(token);
           setPlan(planData);
@@ -175,7 +189,7 @@ function RecipeDetailPage() {
           setLoadingPlan(false);
         }
       };
-      loadPlanAndMenuId();
+      loadPlan();
     }
   }, [recipe, token]);
 
@@ -249,7 +263,7 @@ function RecipeDetailPage() {
       }
 
       alert('ลบสูตรอาหารสำเร็จ');
-      navigate('/community');
+      navigate('/menus');
     } catch (error) {
       console.error('Delete error:', error);
       alert('เกิดข้อผิดพลาด: ' + error.message);

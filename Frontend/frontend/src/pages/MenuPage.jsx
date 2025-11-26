@@ -36,6 +36,9 @@ function RecipeCard({ recipe, token, user, onDelete, onReport, recipeRef, isHigh
   
   // ตรวจสอบว่าเป็นเจ้าของสูตรหรือไม่
   const isOwner = recipe.user_id && user?.user_id === recipe.user_id;
+  
+  // ตรวจสอบว่าเป็น admin หรือไม่
+  const isAdmin = user?.isAdmin === true;
 
   // ตรวจสอบว่าเป็น UserRecipe (มี recipe_id และ post_type === 'recipe') หรือ CommunityPost
   // หมายเหตุ: API ส่ง cpost_id: recipe.recipe_id มาด้วย ดังนั้นต้องตรวจสอบ post_type
@@ -197,7 +200,7 @@ function RecipeCard({ recipe, token, user, onDelete, onReport, recipeRef, isHigh
                   </svg>
                 </button>
               )}
-              {isOwner && onDelete && (
+              {(isOwner || (isAdmin && isUserRecipe)) && onDelete && (
                 <button
                   type="button"
                   onClick={(e) => {
@@ -206,14 +209,14 @@ function RecipeCard({ recipe, token, user, onDelete, onReport, recipeRef, isHigh
                     onDelete(recipe.recipe_id || recipe.cpost_id);
                   }}
                   className="px-4 py-2 rounded-full bg-red-500 text-white text-sm font-semibold hover:bg-red-600 transition-colors"
-                  title="ลบสูตรอาหาร"
+                  title={isAdmin && !isOwner ? "ลบในฐานะ Admin" : "ลบสูตรอาหาร"}
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                   </svg>
                 </button>
               )}
-              {!isOwner && onReport && (
+              {!isOwner && !isAdmin && onReport && (
                 <button
                   type="button"
                   onClick={(e) => {
@@ -373,36 +376,9 @@ function MenuCard({ menu, categoryName, token, user }) {
         <div className="mt-auto flex gap-3">
           <button
             type="button"
-            onClick={async () => {
-              // Track menu view
-              if (token) {
-                try {
-                  await fetch(`${API_URL}/behavior/menu/view`, {
-                    method: 'POST',
-                    headers: {
-                      'Authorization': `Bearer ${token}`,
-                      'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ menu_id: menu.menu_id, user_id: user?.user_id })
-                  });
-                } catch (error) {
-                  console.error('Failed to track menu view:', error);
-                }
-                
-                // Track menu like behavior (preference boost)
-                try {
-                  await fetch(`${API_URL}/behavior/menu/like`, {
-                    method: 'POST',
-                    headers: {
-                      'Authorization': `Bearer ${token}`,
-                      'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ menu_id: menu.menu_id, user_id: user?.user_id })
-                  });
-                } catch (error) {
-                  console.error('Failed to update preference:', error);
-                }
-              }
+            onClick={() => {
+              // Navigate ทันทีเพื่อให้เร็วขึ้น
+              // การ track menu view จะทำใน RecipeDetailPage เมื่อโหลดหน้าเสร็จแล้ว
               navigate(`/menus/${menu.menu_id}`);
             }}
             className="flex-1 px-4 py-2 rounded-full bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 transition-colors shadow"
