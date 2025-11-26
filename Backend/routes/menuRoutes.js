@@ -288,4 +288,50 @@ router.post('/menus/:id/like', authMiddleware, async (req, res) => {
   }
 });
 
+// GET /api/menus/recommended-liked - เมนูแนะนำจากเมนูที่ผู้ใช้กดไลค์มากที่สุด
+router.get('/menus/recommended-liked', authMiddleware, async (req, res) => {
+  const userId = req.user.id;
+
+  try {
+    // ดึงรายการเมนูที่ผู้ใช้คนนี้เคยกดไลค์
+    const { data: likes, error: likesErr } = await supabase
+      .from('MenuLike')
+      .select('menu_id')
+      .eq('user_id', userId);
+
+    if (likesErr) throw likesErr;
+
+    let menus = [];
+
+    if (likes && likes.length > 0) {
+      const likedIds = likes.map(like => like.menu_id);
+
+      const { data, error } = await supabase
+        .from('Menu')
+        .select('menu_id, menu_name, menu_image, menu_description, menu_like_count')
+        .in('menu_id', likedIds)
+        .order('menu_like_count', { ascending: false })
+        .limit(12);
+
+      if (error) throw error;
+      menus = data || [];
+    } else {
+      // ถ้ายังไม่เคยกดไลค์เลย ให้แนะนำจากเมนูที่มียอดไลค์สูงสุดในระบบ
+      const { data, error } = await supabase
+        .from('Menu')
+        .select('menu_id, menu_name, menu_image, menu_description, menu_like_count')
+        .order('menu_like_count', { ascending: false })
+        .limit(12);
+
+      if (error) throw error;
+      menus = data || [];
+    }
+
+    res.json(menus);
+  } catch (error) {
+    console.error('Error fetching recommended liked menus:', error);
+    res.status(500).json({ message: 'เกิดข้อผิดพลาดในการดึงเมนูแนะนำจากเมนูที่คุณกดไลค์' });
+  }
+});
+
 module.exports = router;
