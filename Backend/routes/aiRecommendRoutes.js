@@ -31,7 +31,7 @@ router.get('/ai/recommendations', authMiddleware, async (req, res) => {
       categoryPrefs: behaviorData.categoryPrefs?.length || 0
     });
     
-    const mlRecommendations = await getMLRecommendations(behaviorData, userProfile);
+    const mlRecommendations = await getMLRecommendations(behaviorData, userProfile, user_id);
     console.log('🔍 [Backend] ML recommendations count:', mlRecommendations.recommendations?.length || 0);
     console.log('🔍 [Backend] ML method:', mlRecommendations.method);
     
@@ -360,6 +360,7 @@ function buildMenuVector(menu, allIngredients, allCategories) {
 
 /**
  * Build user profile vector from behavior data
+ * สร้าง implicit preferences จากเมนูที่เคยดู/ไลค์ถ้าไม่มี preferences
  */
 function buildUserProfileVector(behaviorData, allIngredients, allCategories) {
   const vector = [];
@@ -370,11 +371,40 @@ function buildUserProfileVector(behaviorData, allIngredients, allCategories) {
     ingredientPrefMap.set(pref.ingredient_name, pref.preference_score);
   });
   
+  // ถ้าไม่มี preferences ให้สร้าง implicit preferences จากเมนูที่เคยดู/ไลค์
+  if (ingredientPrefMap.size === 0) {
+    // Extract ingredients จากเมนูที่เคยไลค์
+    (behaviorData.likedMenus || []).forEach(like => {
+      if (like.Menu) {
+        const menuText = `${like.Menu.menu_recipe || ''} ${like.Menu.menu_description || ''}`.toLowerCase();
+        allIngredients.forEach(ing => {
+          if (menuText.includes(ing.toLowerCase())) {
+            const current = ingredientPrefMap.get(ing) || 0;
+            ingredientPrefMap.set(ing, current + 0.5); // เพิ่มคะแนนจากเมนูที่ไลค์
+          }
+        });
+      }
+    });
+    
+    // Extract ingredients จากเมนูที่เคยดู
+    (behaviorData.viewedMenus || []).forEach(view => {
+      if (view.Menu) {
+        const menuText = `${view.Menu.menu_recipe || ''} ${view.Menu.menu_description || ''}`.toLowerCase();
+        allIngredients.forEach(ing => {
+          if (menuText.includes(ing.toLowerCase())) {
+            const current = ingredientPrefMap.get(ing) || 0;
+            ingredientPrefMap.set(ing, current + 0.1 * (view.view_count || 1)); // เพิ่มคะแนนจากเมนูที่ดู
+          }
+        });
+      }
+    });
+  }
+  
   // Feature 1-50: Ingredient preference scores (normalized to 0-1)
   for (const ing of allIngredients) {
     const score = ingredientPrefMap.get(ing) || 0;
-    // Normalize: -10 to 10 -> 0 to 1
-    const normalized = (score + 10) / 20;
+    // Normalize: -10 to 10 -> 0 to 1 (แต่ถ้าเป็น implicit จะเป็น 0-1 โดยตรง)
+    const normalized = score > 10 ? Math.min(score / 20, 1) : (score + 10) / 20;
     vector.push(Math.max(0, Math.min(1, normalized)));
   }
   
@@ -384,9 +414,26 @@ function buildUserProfileVector(behaviorData, allIngredients, allCategories) {
     categoryPrefMap.set(pref.category_id, pref.preference_score);
   });
   
+  // ถ้าไม่มี category preferences ให้สร้าง implicit จากเมนูที่เคยดู/ไลค์
+  if (categoryPrefMap.size === 0) {
+    (behaviorData.likedMenus || []).forEach(like => {
+      if (like.Menu?.category_id) {
+        const current = categoryPrefMap.get(like.Menu.category_id) || 0;
+        categoryPrefMap.set(like.Menu.category_id, current + 0.5);
+      }
+    });
+    
+    (behaviorData.viewedMenus || []).forEach(view => {
+      if (view.Menu?.category_id) {
+        const current = categoryPrefMap.get(view.Menu.category_id) || 0;
+        categoryPrefMap.set(view.Menu.category_id, current + 0.1 * (view.view_count || 1));
+      }
+    });
+  }
+  
   for (const cat of allCategories) {
     const score = categoryPrefMap.get(cat) || 0;
-    const normalized = (score + 10) / 20;
+    const normalized = score > 10 ? Math.min(score / 20, 1) : (score + 10) / 20;
     vector.push(Math.max(0, Math.min(1, normalized)));
   }
   
@@ -403,7 +450,7 @@ function buildUserProfileVector(behaviorData, allIngredients, allCategories) {
 /**
  * ML-Based Recommendations using Content-Based Filtering
  */
-async function getMLRecommendations(behaviorData, userProfile) {
+async function getMLRecommendations(behaviorData, userProfile, user_id) {
   try {
     console.log('🔍 [ML] Starting ML recommendations...');
     // Get all menus from database
@@ -490,19 +537,57 @@ async function getMLRecommendations(behaviorData, userProfile) {
     const validScores = menuScores.filter(item => item.similarity >= 0);
     console.log('🔍 [ML] Valid scores (non-negative):', validScores.length);
     
-    const recommendations = validScores
-      .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, 10)
-      .map(({ menu, similarity, reason }) => ({
-        menu_id: menu.menu_id,
-        menu_name: menu.menu_name,
-        menu_image: menu.menu_image,
-        menu_description: menu.menu_description,
-        reason: reason,
-        matching_preferences: [reason],
-        similarity_score: similarity.toFixed(3),
-        exists_in_db: true
-      }));
+    // แยกเมนูที่เคย interact ออก
+    const likedMenuIds = new Set((behaviorData.likedMenus || []).map(m => m.menu_id));
+    const viewedMenuIds = new Set((behaviorData.viewedMenus || []).map(m => m.menu_id));
+    const excludedIds = new Set([...likedMenuIds, ...viewedMenuIds]);
+    
+    // แยกเมนูที่ยังไม่เคย interact
+    const availableScores = validScores.filter(item => !excludedIds.has(item.menu.menu_id));
+    const sortedScores = availableScores.sort((a, b) => b.similarity - a.similarity);
+    
+    // เพิ่มความหลากหลาย: แบ่งเป็นกลุ่ม similarity แล้วสุ่มในแต่ละกลุ่ม
+    // ใช้ user_id เป็น seed เพื่อให้แต่ละ user ได้ผลลัพธ์ต่างกัน
+    const userSeed = user_id ? user_id.toString().split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) : Math.floor(Math.random() * 10000);
+    const seededRandom = (seed) => {
+      let value = seed;
+      return () => {
+        value = (value * 9301 + 49297) % 233280;
+        return value / 233280;
+      };
+    };
+    const random = seededRandom(userSeed);
+    
+    // แบ่งเป็น 3 กลุ่ม: similarity สูง, ปานกลาง, ต่ำ
+    const highSimilarity = sortedScores.filter(s => s.similarity >= 0.3).slice(0, 20);
+    const midSimilarity = sortedScores.filter(s => s.similarity >= 0.1 && s.similarity < 0.3).slice(0, 30);
+    const lowSimilarity = sortedScores.filter(s => s.similarity < 0.1).slice(0, 50);
+    
+    // สุ่มเลือกจากแต่ละกลุ่ม: 4 จาก high, 4 จาก mid, 2 จาก low
+    const selected = [
+      ...highSimilarity.sort(() => random() - 0.5).slice(0, 4),
+      ...midSimilarity.sort(() => random() - 0.5).slice(0, 4),
+      ...lowSimilarity.sort(() => random() - 0.5).slice(0, 2)
+    ];
+    
+    // ถ้ายังไม่ครบ 10 ให้เติมจาก sortedScores (เรียงตาม similarity)
+    if (selected.length < 10) {
+      const remaining = sortedScores
+        .filter(s => !selected.find(sel => sel.menu.menu_id === s.menu.menu_id))
+        .slice(0, 10 - selected.length);
+      selected.push(...remaining);
+    }
+    
+    const recommendations = selected.slice(0, 10).map(({ menu, similarity, reason }) => ({
+      menu_id: menu.menu_id,
+      menu_name: menu.menu_name,
+      menu_image: menu.menu_image,
+      menu_description: menu.menu_description,
+      reason: reason,
+      matching_preferences: [reason],
+      similarity_score: similarity.toFixed(3),
+      exists_in_db: true
+    }));
     
     console.log('✅ [ML] Generated', recommendations.length, 'recommendations');
     console.log('🔍 [ML] Top 3 similarities:', recommendations.slice(0, 3).map(r => ({ name: r.menu_name, score: r.similarity_score })));
@@ -625,7 +710,7 @@ router.post('/ai/meal-suggestions', authMiddleware, async (req, res) => {
       .single();
 
     // ใช้ ML recommendations แทน AI
-    const mlRecommendations = await getMLRecommendations(behaviorData, userProfile);
+    const mlRecommendations = await getMLRecommendations(behaviorData, userProfile, user_id);
     
     // ถ้า ML ให้ผลมา ให้ใช้ (slice แค่ 3 เมนูสำหรับ meal suggestions)
     if (mlRecommendations.recommendations && mlRecommendations.recommendations.length > 0) {
