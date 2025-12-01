@@ -3,51 +3,240 @@ const router = express.Router();
 const { supabase } = require('../config/supabase');
 const authMiddleware = require('../middleware/authMiddleware');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const fs = require('fs');
+const path = require('path');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
-// Thai profanity word list (basic example - should be expanded)
-const PROFANITY_WORDS = [
-  // Common Thai profanity
-  'สัตว์', 'สัตว', 'ไอ้', 'อี', 'ควาย', 'หมา', 'เหี้ย', 'แม่ง', 'สาส', 'สัส', 'ควย',
-  'ชาติชั่ว', 'ระยำ', 'มึง', 'กู', 'ห่า', 'เชี่ย', 'พ่อง',
-  // English profanity
-  'fuck', 'shit', 'damn', 'hell', 'bitch', 'ass', 'bastard', 'dick',
-  // Add more as needed
-];
+// Load profanity words from dataset files
+// Returns: { level1: [], level2: [] }
+// Level 1: Clear profanity (block immediately)
+// Level 2: Sensitive/negative words (AI context check needed)
+function loadProfanityWords() {
+  const level1Words = new Set(); // Clear profanity - block immediately
+  const level2Words = new Set(); // Sensitive words - AI context check
+  
+  try {
+    // ===== LEVEL 1: Clear Profanity (Block Immediately) =====
+    
+    // Load swear words from thaiBadword/swear-words.txt
+    const swearWordsPath = path.join(__dirname, '../data/thaiBadword/swear-words.txt');
+    if (fs.existsSync(swearWordsPath)) {
+      const swearWords = fs.readFileSync(swearWordsPath, 'utf-8')
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line && !line.startsWith('#'));
+      
+      swearWords.forEach(word => level1Words.add(word.toLowerCase()));
+      console.log(`[Level 1] Loaded ${swearWords.length} swear words from dataset`);
+    }
 
-// Check content for profanity
+    // Load toxic keywords from ThaiToxicityTweetCorpus/toxic_keywords.txt
+    const toxicKeywordsPath = path.join(__dirname, '../data/ThaiToxicityTweetCorpus-master/ThaiToxicityTweetCorpus-master/toxic_keywords.txt');
+    if (fs.existsSync(toxicKeywordsPath)) {
+      const toxicKeywords = fs.readFileSync(toxicKeywordsPath, 'utf-8')
+        .split('\n')
+        .map(line => {
+          // Parse format: "word\ttranslation" - take only the word part
+          const word = line.split('\t')[0]?.trim();
+          return word;
+        })
+        .filter(word => word && !word.startsWith('#'));
+      
+      toxicKeywords.forEach(word => level1Words.add(word.toLowerCase()));
+      console.log(`[Level 1] Loaded ${toxicKeywords.length} toxic keywords from dataset`);
+    }
+
+    // High-priority negative sentiment words that are clearly profanity
+    const highPriorityNegativeWords = [
+      'เหี้ย', 'สัด', 'หมา', 'ควาย', 'ชาติชั่ว', 'ระยำ', 'แม่ง', 'สาส', 'สัส', 
+      'ควย', 'ห่า', 'เชี่ย', 'พ่อง', 'มึง', 'กู', 'อี', 'ไอ้'
+    ];
+    highPriorityNegativeWords.forEach(word => level1Words.add(word.toLowerCase()));
+
+    // English profanity
+    const englishProfanity = [
+      'fuck', 'shit', 'damn', 'hell', 'bitch', 'ass', 'bastard', 'dick',
+      'cunt', 'piss', 'cock', 'whore', 'slut'
+    ];
+    englishProfanity.forEach(word => level1Words.add(word.toLowerCase()));
+
+    // ===== LEVEL 2: Sensitive/Negative Words (AI Context Check) =====
+    
+    // Load negative sentiment words (words that might be used to evade detection)
+    const negativeSentimentPath = path.join(__dirname, '../data/thaiBadword/negative-sentiment-words.txt');
+    if (fs.existsSync(negativeSentimentPath)) {
+      const negativeWords = fs.readFileSync(negativeSentimentPath, 'utf-8')
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line && !line.startsWith('#') && line.length > 0);
+      
+      negativeWords.forEach(word => {
+        const lowerWord = word.toLowerCase();
+        // Only add to level2 if not already in level1 (avoid duplicates)
+        if (!level1Words.has(lowerWord)) {
+          level2Words.add(lowerWord);
+        }
+      });
+      console.log(`[Level 2] Loaded ${negativeWords.length} negative sentiment words from dataset`);
+    }
+
+    console.log(`[Level 1] Total clear profanity words: ${level1Words.size}`);
+    console.log(`[Level 2] Total sensitive words: ${level2Words.size}`);
+    
+    return {
+      level1: Array.from(level1Words),
+      level2: Array.from(level2Words)
+    };
+  } catch (error) {
+    console.error('Error loading profanity words from datasets:', error);
+    // Fallback to basic list if files can't be loaded
+    const fallbackLevel1 = [
+      'สัตว์', 'สัตว', 'ไอ้', 'อี', 'ควาย', 'หมา', 'เหี้ย', 'แม่ง', 'สาส', 'สัส', 'ควย',
+      'ชาติชั่ว', 'ระยำ', 'มึง', 'กู', 'ห่า', 'เชี่ย', 'พ่อง',
+      'fuck', 'shit', 'damn', 'hell', 'bitch', 'ass', 'bastard', 'dick'
+    ];
+    return {
+      level1: fallbackLevel1,
+      level2: []
+    };
+  }
+}
+
+// Load profanity words at startup
+const PROFANITY_DATASETS = loadProfanityWords();
+const PROFANITY_WORDS = [...PROFANITY_DATASETS.level1, ...PROFANITY_DATASETS.level2]; // Combined for backward compatibility
+
+// Check content for profanity using dataset words (2-level system)
 async function checkProfanity(text) {
   const lowerText = text.toLowerCase();
-  const detectedWords = [];
+  const detectedLevel1 = []; // Clear profanity - block immediately
+  const detectedLevel2 = []; // Sensitive words - AI context check
   
-  for (const word of PROFANITY_WORDS) {
-    if (lowerText.includes(word.toLowerCase())) {
-      detectedWords.push(word);
+  // Check for common Thai profanity patterns first (Level 1)
+  const profanityPatterns = [
+    { pattern: /ไอ[^\s\.,!?;:]*เอ้ย/g, name: 'ไอ...เอ้ย', level: 1 },  // Pattern: "ไอ...เอ้ย" (e.g., "ไอมืดเอ้ย")
+    { pattern: /ไอ[^\s\.,!?;:]*เหี้ย/g, name: 'ไอ...เหี้ย', level: 1 },
+    { pattern: /อี[^\s\.,!?;:]*เหี้ย/g, name: 'อี...เหี้ย', level: 1 },
+    { pattern: /มืดเอ้ย/g, name: 'มืดเอ้ย', level: 1 },
+    { pattern: /ไอมืด/g, name: 'ไอมืด', level: 1 },
+    { pattern: /เอ้ย/g, name: 'เอ้ย', level: 1, conditional: true },  // Only if used with profanity
+  ];
+  
+  for (const { pattern, name, level, conditional } of profanityPatterns) {
+    const matches = lowerText.match(pattern);
+    if (matches) {
+      matches.forEach(match => {
+        // Filter out false positives (e.g., "เอ้ย" alone might match legitimate words)
+        if (conditional && name === 'เอ้ย') {
+          // Only match "เอ้ย" if it appears with profanity indicators
+          if (lowerText.match(/ไอ.*เอ้ย|ห่า.*เอ้ย|เหี้ย.*เอ้ย/)) {
+            if (!detectedLevel1.includes(match)) {
+              detectedLevel1.push(match);
+            }
+          }
+        } else {
+          if (level === 1 && !detectedLevel1.includes(match)) {
+            detectedLevel1.push(match);
+          }
+        }
+      });
+    }
+  }
+  
+  // Check Level 1 words (clear profanity)
+  const sortedLevel1 = [...PROFANITY_DATASETS.level1].sort((a, b) => b.length - a.length);
+  
+  for (const word of sortedLevel1) {
+    const lowerWord = word.toLowerCase();
+    const escapedWord = lowerWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    
+    const wordWithBoundaries = new RegExp(
+      `(^|[\\s\\u200B\\u200C\\u200D\\uFEFF.,!?;:])${escapedWord}([\\s\\u200B\\u200C\\u200D\\uFEFF.,!?;:]|$)`,
+      'i'
+    );
+    
+    const exactMatch = lowerText === lowerWord;
+    const appearsInText = lowerText.includes(lowerWord);
+    
+    if (wordWithBoundaries.test(lowerText) || exactMatch || appearsInText) {
+      if (!detectedLevel1.includes(word)) {
+        detectedLevel1.push(word);
+      }
+    }
+  }
+  
+  // Check Level 2 words (sensitive/negative - need AI context check)
+  const sortedLevel2 = [...PROFANITY_DATASETS.level2].sort((a, b) => b.length - a.length);
+  
+  for (const word of sortedLevel2) {
+    const lowerWord = word.toLowerCase();
+    const escapedWord = lowerWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    
+    const wordWithBoundaries = new RegExp(
+      `(^|[\\s\\u200B\\u200C\\u200D\\uFEFF.,!?;:])${escapedWord}([\\s\\u200B\\u200C\\u200D\\uFEFF.,!?;:]|$)`,
+      'i'
+    );
+    
+    const exactMatch = lowerText === lowerWord;
+    const appearsInText = lowerText.includes(lowerWord);
+    
+    if (wordWithBoundaries.test(lowerText) || exactMatch || appearsInText) {
+      if (!detectedLevel2.includes(word)) {
+        detectedLevel2.push(word);
+      }
     }
   }
 
-  // Determine severity (block all detected profanity)
-  const severity = detectedWords.length > 0
-    ? (detectedWords.length >= 3 ? 'critical' : 'high')
-    : 'none';
+  // Determine severity based on detected words
+  const allDetected = [...detectedLevel1, ...detectedLevel2];
+  
+  let severity = 'none';
+  if (detectedLevel1.length > 0) {
+    // Level 1 words found - block immediately
+    severity = detectedLevel1.length >= 3 ? 'critical' : 'high';
+  } else if (detectedLevel2.length > 0) {
+    // Only Level 2 words found - lower severity, let AI decide
+    severity = detectedLevel2.length >= 3 ? 'medium' : 'low';
+  }
 
   return {
-    hasProfanity: detectedWords.length > 0,
-    detectedWords,
+    hasProfanity: allDetected.length > 0,
+    detectedWords: allDetected,
+    detectedLevel1: detectedLevel1, // Clear profanity
+    detectedLevel2: detectedLevel2, // Sensitive words
     severity
   };
 }
 
-// AI-powered content moderation
+// AI-powered content moderation with dataset pre-check
 async function checkContentWithAI(content, contentType) {
   try {
+    // Step 1: Pre-check with dataset (fast and free)
+    const datasetCheck = await checkProfanity(content);
+    
+    // Step 2: If no GEMINI_API_KEY, return dataset check result
     if (!process.env.GEMINI_API_KEY) {
-      // Fallback to basic profanity check
-      return checkProfanity(content);
+      return datasetCheck;
     }
 
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+
+    // Include dataset findings in the prompt for AI context
+    let datasetInfo = '';
+    if (datasetCheck.hasProfanity) {
+      const level1Words = datasetCheck.detectedLevel1 || [];
+      const level2Words = datasetCheck.detectedLevel2 || [];
+      
+      if (level1Words.length > 0) {
+        datasetInfo += `\n\n[CRITICAL] Pre-check detected clear profanity words: ${level1Words.join(', ')}. These should be blocked.`;
+      }
+      if (level2Words.length > 0) {
+        datasetInfo += `\n\n[REVIEW] Pre-check detected sensitive/negative words: ${level2Words.join(', ')}. Please check context - these might be used legitimately or as evasion techniques.`;
+      }
+    } else {
+      datasetInfo = '\n\nNote: Pre-check with Thai profanity dataset found no obvious profanity or sensitive words.';
+    }
 
     const prompt = `
       Analyze the following ${contentType} content for:
@@ -55,8 +244,10 @@ async function checkContentWithAI(content, contentType) {
       2. Hate speech or discrimination
       3. Spam or promotional content
       4. Threats or harmful content
+      5. Evasion techniques (words used to bypass filters)
       
       Content: "${content}"
+      ${datasetInfo}
       
       Respond in JSON format:
       {
@@ -69,7 +260,14 @@ async function checkContentWithAI(content, contentType) {
         "reason": "Brief explanation"
       }
       
-      Be strict but fair. Consider cultural context for Thai content.
+      Important guidelines:
+      - If [CRITICAL] words are found, they are clear profanity - BLOCK immediately
+      - If [REVIEW] sensitive words are found, check context carefully:
+        * Are they used in a negative/insulting way? → Mark as inappropriate
+        * Are they used legitimately (e.g., "มืด" in "มันมืดแล้ว")? → Allow
+        * Are they part of evasion attempts (e.g., "ไอมืดเอ้ย")? → BLOCK
+      - Be strict but fair. Consider cultural context for Thai content.
+      - Pay attention to word combinations that might be used to evade detection.
       Return ONLY JSON.
     `;
 
@@ -81,21 +279,49 @@ async function checkContentWithAI(content, contentType) {
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const analysis = JSON.parse(jsonMatch[0]);
+        
+        // Combine dataset findings with AI analysis
+        const combinedDetectedWords = [
+          ...datasetCheck.detectedWords,
+          ...(analysis.detectedIssues || [])
+        ].filter((v, i, a) => a.indexOf(v) === i); // Remove duplicates
+        
+        // Use more severe severity between dataset and AI
+        const severityMap = { none: 0, low: 1, medium: 2, high: 3, critical: 4 };
+        const datasetSeverityLevel = severityMap[datasetCheck.severity] || 0;
+        const aiSeverityLevel = severityMap[analysis.severity] || 0;
+        const finalSeverity = datasetSeverityLevel >= aiSeverityLevel 
+          ? datasetCheck.severity 
+          : analysis.severity;
+        
         return {
-          hasProfanity: analysis.hasProfanity || false,
-          detectedWords: analysis.detectedIssues || [],
-          severity: analysis.severity || 'none',
-          aiAnalysis: analysis
+          hasProfanity: analysis.hasProfanity || datasetCheck.hasProfanity,
+          detectedWords: combinedDetectedWords,
+          severity: finalSeverity,
+          aiAnalysis: analysis,
+          datasetCheck: {
+            hasProfanity: datasetCheck.hasProfanity,
+            detectedWords: datasetCheck.detectedWords,
+            detectedLevel1: datasetCheck.detectedLevel1 || [],
+            detectedLevel2: datasetCheck.detectedLevel2 || [],
+            severity: datasetCheck.severity
+          },
+          detectedLevel1: datasetCheck.detectedLevel1 || [],
+          detectedLevel2: datasetCheck.detectedLevel2 || []
         };
       }
     } catch (parseError) {
       console.error('Error parsing AI moderation response:', parseError);
+      // If AI parsing fails, return dataset check result
+      return datasetCheck;
     }
   } catch (error) {
     console.error('Error with AI moderation:', error);
+    // If AI error, return dataset check result
+    return checkProfanity(content);
   }
 
-  // Fallback to basic check
+  // Fallback to dataset check
   return checkProfanity(content);
 }
 
@@ -312,21 +538,50 @@ async function moderateContent(req, res, next) {
     if (contentToCheck) {
       const moderation = await checkContentWithAI(contentToCheck, contentType);
       
-      if (moderation.hasProfanity || moderation.severity === 'high' || moderation.severity === 'critical') {
-        // Block the content
+      // Only block if:
+      // 1. Level 1 words detected (clear profanity) - BLOCK immediately
+      // 2. OR severity is high/critical (from AI or dataset)
+      const hasLevel1Words = moderation.datasetCheck?.detectedLevel1?.length > 0 || 
+                             (moderation.detectedLevel1 && moderation.detectedLevel1.length > 0);
+      const hasHighSeverity = moderation.severity === 'high' || moderation.severity === 'critical';
+      
+      if (hasLevel1Words || hasHighSeverity) {
+        // Block the content - clear profanity detected
         return res.status(400).json({
           message: 'ข้อความของคุณมีเนื้อหาที่ไม่เหมาะสม กรุณาแก้ไขก่อนโพสต์',
           moderation: {
             reason: moderation.aiAnalysis?.reason || 'Inappropriate content detected',
-            severity: moderation.severity
+            severity: moderation.severity,
+            detectedWords: moderation.detectedWords
           }
         });
-      } else if (moderation.hasProfanity) {
-        // Add warning to response but allow posting
-        req.moderationWarning = {
-          message: 'พบคำที่อาจไม่เหมาะสมในข้อความของคุณ',
-          severity: moderation.severity
-        };
+      }
+      
+      // For Level 2 words (sensitive/negative words) - let AI decide based on context
+      const hasOnlyLevel2Words = (moderation.datasetCheck?.detectedLevel2?.length > 0 || 
+                                   (moderation.detectedLevel2 && moderation.detectedLevel2.length > 0)) &&
+                                  !hasLevel1Words;
+      
+      if (hasOnlyLevel2Words) {
+        // Only Level 2 words detected - check AI's decision
+        // Block only if AI explicitly says it's profanity AND severity is medium or higher
+        if (moderation.aiAnalysis && 
+            moderation.aiAnalysis.hasProfanity === true && 
+            (moderation.severity === 'medium' || moderation.severity === 'high')) {
+          // AI says it's inappropriate with medium+ severity - block it
+          return res.status(400).json({
+            message: 'ข้อความของคุณมีเนื้อหาที่ไม่เหมาะสม กรุณาแก้ไขก่อนโพสต์',
+            moderation: {
+              reason: moderation.aiAnalysis?.reason || 'Inappropriate content detected',
+              severity: moderation.severity,
+              detectedWords: moderation.detectedWords
+            }
+          });
+        }
+        
+        // Otherwise allow it (low severity or AI says it's OK)
+        // Examples: "แย่มากอันนี้", "อากาศมืดแล้ว" - legitimate uses
+        // These will pass through
       }
 
       // Store moderation result for logging
