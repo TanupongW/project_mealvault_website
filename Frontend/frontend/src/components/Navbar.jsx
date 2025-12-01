@@ -117,6 +117,15 @@ function Navbar() {
                     >
                       เข้าดูหน้าโปรไฟล์
                     </Link>
+                    {isAdmin && (
+                      <Link
+                        to="/admin/users"
+                        onClick={() => setShowProfileMenu(false)}
+                        className="block w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                      >
+                        จัดการผู้ใช้(สำหรับadmin)
+                      </Link>
+                    )}
                     <button
                       onClick={handleLogoutClick}
                       className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 rounded-b-lg transition-colors"
@@ -204,6 +213,15 @@ function Navbar() {
                     </Link>
                     <NotificationDropdown />
                   </div>
+                  {isAdmin && (
+                    <Link 
+                      to="/admin/users"
+                      onClick={closeMobileMenu}
+                      className="block w-full text-center px-4 py-2 bg-red-500 text-white font-semibold rounded-full hover:bg-red-600 transition-all duration-300"
+                    >
+                      จัดการผู้ใช้
+                    </Link>
+                  )}
                   <Link 
                     to="/community/recipes/new"
                     onClick={closeMobileMenu}

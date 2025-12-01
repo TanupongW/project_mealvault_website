@@ -29,6 +29,7 @@ import UserProfilePage from './pages/UserProfilePage';
 import CreateRecipePage from './pages/CreateRecipePage';
 import EditRecipePage from './pages/EditRecipePage';
 import NotificationsPage from './pages/NotificationsPage';
+import AdminUsersPage from './pages/AdminUsersPage';
 
 function App() {
   return (
@@ -63,6 +64,7 @@ function App() {
           <Route path="/create-post" element={<CreatePostPage />} />
           <Route path="/edit-post/:id" element={<EditPostPage />} />
           <Route path="/menus/:recipeId/edit" element={<EditRecipePage />} />
+          <Route path="/admin/users" element={<AdminUsersPage />} />
           {/* สามารถเพิ่ม Route ที่ต้องการป้องกันอื่นๆ ได้ที่นี่ในอนาคต */}
         </Route>
         
