@@ -322,7 +322,7 @@ function RecipeDetailPage() {
           <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg p-8">
             <div className="mb-6 flex items-center justify-between">
               <button
-                onClick={() => navigate('/menus')}
+                onClick={() => navigate(-1)}
                 className="flex items-center gap-2 text-gray-600 hover:text-gray-800 transition-colors"
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
