@@ -33,7 +33,7 @@ git push origin main
 4. Add Environment Variables (click "Environment Variables"):
    ```
    PORT=3000
-   GEMINI_API_KEY=AIzaSyCcfnidMX3O9YEmPQeOASR3sXiOgSnLFjk
+   GEMINI_API_KEY=your_gemini_api_key_here
    SUPABASE_URL=https://hjecmsvuwexqdkhwylqw.supabase.co
    SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
    JWT_SECRET=clvvOr2cxPJcB6KABNaZqdpaJj2glfrqa/hfb0J4gbsy8FJUehuF1lhRXzECATVf17uEqWjr2dxdQRVTMUkX1A==

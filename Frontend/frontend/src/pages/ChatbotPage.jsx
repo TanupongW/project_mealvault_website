@@ -1,13 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { API_URL, IMAGE_URL } from '../config/api';
 
 const initialMessage = { 
   sender: 'ai', 
-  text: 'สวัสดีค่ะ มีอะไรให้ช่วยเกี่ยวกับเมนูอาหาร หรือวัตถุดิบไหมคะ?' 
+  text: 'สวัสดีค่ะ มีอะไรให้ช่วยเกี่ยวกับเมนูอาหาร หรือวัตถุดิบไหมคะ?',
+  recommendedMenus: []
 };
 
 function ChatbotPage() {
+  const navigate = useNavigate();
   const [messages, setMessages] = useState([initialMessage]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -36,7 +39,11 @@ function ChatbotPage() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
-      const aiMessage = { sender: 'ai', text: data.reply };
+      const aiMessage = { 
+        sender: 'ai', 
+        text: data.reply,
+        recommendedMenus: data.recommendedMenus || []
+      };
       setMessages(prev => [...prev, aiMessage]);
     } catch (error) {
       const errorMessage = { sender: 'ai', text: `ขออภัยค่ะ เกิดข้อผิดพลาด: ${error.message}` };
@@ -95,6 +102,60 @@ function ChatbotPage() {
                 )}
                 <div className={`px-5 py-3 rounded-2xl max-w-[75%] shadow-md ${msg.sender === 'user' ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-br-none' : 'bg-white text-gray-800 rounded-bl-none border border-gray-100'}`}>
                   <p style={{whiteSpace: 'pre-wrap'}} className="leading-relaxed">{msg.text}</p>
+                  
+                  {/* แสดงเมนูที่แนะนำเป็น cards */}
+                  {msg.sender === 'ai' && msg.recommendedMenus && msg.recommendedMenus.length > 0 && (
+                    <div className="mt-4 space-y-2">
+                      <p className="text-sm font-semibold text-gray-700 mb-3 flex items-center">
+                        <span className="mr-2">🍽️</span>
+                        เมนูที่แนะนำ:
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {msg.recommendedMenus.map((menu) => (
+                          <div
+                            key={menu.menu_id}
+                            onClick={() => navigate(`/menus/${menu.menu_id}`)}
+                            className="bg-gradient-to-r from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl p-3 cursor-pointer hover:shadow-lg hover:border-green-400 hover:scale-[1.02] transition-all duration-200 group"
+                          >
+                            <div className="flex items-start space-x-3">
+                              <div className="flex-shrink-0">
+                                {menu.menu_image ? (
+                                  <img
+                                    src={menu.menu_image.startsWith('http') ? menu.menu_image : `${IMAGE_URL}/${menu.menu_image}`}
+                                    alt={menu.menu_name}
+                                    className="w-20 h-20 object-cover rounded-lg shadow-md"
+                                    onError={(e) => {
+                                      e.target.src = 'https://via.placeholder.com/80x80?text=Menu';
+                                    }}
+                                  />
+                                ) : (
+                                  <div className="w-20 h-20 bg-gradient-to-br from-green-200 to-emerald-300 rounded-lg flex items-center justify-center shadow-md">
+                                    <span className="text-3xl">🍲</span>
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <h4 className="font-semibold text-gray-800 group-hover:text-green-600 truncate text-base">
+                                  {menu.menu_name}
+                                </h4>
+                                {menu.menu_description && (
+                                  <p className="text-xs text-gray-600 line-clamp-2 mt-1">
+                                    {menu.menu_description}
+                                  </p>
+                                )}
+                                <div className="mt-2 flex items-center">
+                                  <span className="text-xs text-green-600 font-semibold group-hover:text-green-700">
+                                    คลิกเพื่อดูรายละเอียด
+                                  </span>
+                                  <span className="ml-1 text-green-600 group-hover:translate-x-1 transition-transform">→</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 {msg.sender === 'user' && (
                   <div className="w-10 h-10 bg-gray-300 rounded-full flex items-center justify-center flex-shrink-0">
